@@ -68,7 +68,7 @@ pub struct Recipe {
     pub items: Vec<RecipeItem>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeRole {
     Dal,
@@ -76,13 +76,8 @@ pub enum RecipeRole {
     Rice,
     Sabji,
     Roti,
+    #[default]
     OnePot,
-}
-
-impl Default for RecipeRole {
-    fn default() -> Self {
-        Self::OnePot
-    }
 }
 
 impl RecipeRole {

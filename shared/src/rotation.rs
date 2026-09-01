@@ -222,16 +222,16 @@ fn fill_any_pattern(
 
             for &role in *pattern {
                 let remaining = treat_remaining.saturating_sub(treats);
-                let Some(recipe) = choose_recipe(
+                let picker = PickContext {
                     recipes,
                     role,
-                    rng,
-                    &temp_used,
+                    used: &temp_used,
                     used_sabjis,
-                    remaining,
-                    cuisine,
+                    treat_remaining: remaining,
+                    preferred_cuisine: cuisine,
                     allow_repeats,
-                ) else {
+                };
+                let Some(recipe) = choose_recipe(picker, rng) else {
                     ok = false;
                     break;
                 };
@@ -248,37 +248,41 @@ fn fill_any_pattern(
     None
 }
 
-fn choose_recipe<'a>(
-    recipes: &[&'a Recipe],
+struct PickContext<'a, 'b> {
+    recipes: &'b [&'a Recipe],
     role: RecipeRole,
-    rng: &mut SmallRng,
-    used: &HashSet<i64>,
-    used_sabjis: &HashSet<i64>,
+    used: &'b HashSet<i64>,
+    used_sabjis: &'b HashSet<i64>,
     treat_remaining: usize,
-    preferred_cuisine: Option<&str>,
+    preferred_cuisine: Option<&'b str>,
     allow_repeats: bool,
-) -> Option<&'a Recipe> {
-    let mut candidates: Vec<&Recipe> = recipes
+}
+
+fn choose_recipe<'a>(ctx: PickContext<'a, '_>, rng: &mut SmallRng) -> Option<&'a Recipe> {
+    let mut candidates: Vec<&Recipe> = ctx
+        .recipes
         .iter()
         .copied()
-        .filter(|r| r.role == role)
-        .filter(|r| allow_repeats || !used.contains(&r.id))
-        .filter(|r| !r.treat || treat_remaining > 0)
-        .filter(|r| preferred_cuisine.is_none_or(|c| r.cuisine == c))
+        .filter(|r| r.role == ctx.role)
+        .filter(|r| ctx.allow_repeats || !ctx.used.contains(&r.id))
+        .filter(|r| !r.treat || ctx.treat_remaining > 0)
+        .filter(|r| ctx.preferred_cuisine.is_none_or(|c| r.cuisine == c))
         .collect();
 
-    if candidates.is_empty() && preferred_cuisine.is_some() {
-        candidates = recipes
+    if candidates.is_empty() && ctx.preferred_cuisine.is_some() {
+        candidates = ctx
+            .recipes
             .iter()
             .copied()
-            .filter(|r| r.role == role)
-            .filter(|r| allow_repeats || !used.contains(&r.id))
-            .filter(|r| !r.treat || treat_remaining > 0)
+            .filter(|r| r.role == ctx.role)
+            .filter(|r| ctx.allow_repeats || !ctx.used.contains(&r.id))
+            .filter(|r| !r.treat || ctx.treat_remaining > 0)
             .collect();
     }
 
-    if role == RecipeRole::Sabji && candidates.iter().any(|r| !used_sabjis.contains(&r.id)) {
-        candidates.retain(|r| !used_sabjis.contains(&r.id));
+    if ctx.role == RecipeRole::Sabji && candidates.iter().any(|r| !ctx.used_sabjis.contains(&r.id))
+    {
+        candidates.retain(|r| !ctx.used_sabjis.contains(&r.id));
     }
 
     candidates.sort_by_key(|r| r.last_used.unwrap_or(i64::MIN));
