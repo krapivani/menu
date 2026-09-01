@@ -1,4 +1,4 @@
-use crate::models::Recipe;
+use crate::models::{PlanDay, Recipe, RecipeRole};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -8,57 +8,85 @@ use std::collections::{HashMap, HashSet};
 pub enum RotationError {
     #[error("not enough recipes match the given filters: need {needed}, have {available}")]
     NotEnoughRecipes { needed: usize, available: usize },
-    #[error("pinned recipe id {0} does not exist or does not match the tag filters")]
+    #[error("pinned recipe id {0} does not exist or does not match the filters")]
     InvalidPin(i64),
     #[error("day index {0} is out of range for a plan of length {1}")]
     DayOutOfRange(usize, usize),
+    #[error("pinned treats exceed the limit of {limit} per {days} days")]
+    TreatLimitExceeded { limit: usize, days: usize },
 }
 
-/// Filter recipes so that every requested tag is present on the recipe (AND semantics).
-pub fn filter_by_tags<'a>(recipes: &'a [Recipe], tags: &[String]) -> Vec<&'a Recipe> {
+const PATTERNS: [&[RecipeRole]; 4] = [
+    &[RecipeRole::Dal, RecipeRole::Rice, RecipeRole::Sabji],
+    &[RecipeRole::Kadhi, RecipeRole::Rice, RecipeRole::Sabji],
+    &[RecipeRole::Sabji, RecipeRole::Roti],
+    &[RecipeRole::OnePot],
+];
+
+/// Filter recipes so that every requested tag is present on the recipe (AND
+/// semantics), and at least one selected cuisine matches when cuisine filters
+/// are supplied.
+pub fn filter_recipes<'a>(
+    recipes: &'a [Recipe],
+    tags: &[String],
+    cuisines: &[String],
+) -> Vec<&'a Recipe> {
     recipes
         .iter()
         .filter(|r| tags.iter().all(|t| r.tags.iter().any(|rt| rt == t)))
+        .filter(|r| cuisines.is_empty() || cuisines.iter().any(|c| c == &r.cuisine))
         .collect()
 }
 
-/// Generate a random weekly (or any-length) menu rotation.
+/// Generate a dinner plan. Each day is filled from one of the seeded patterns:
+/// dal+rice+sabji, kadhi+rice+sabji, sabji+roti, or one_pot.
 ///
-/// * `recipes` - the full recipe library.
-/// * `days` - number of days/slots to fill.
-/// * `tag_filters` - only recipes containing all of these tags are eligible.
-/// * `pinned` - day index -> recipe id that must be used on that day (locked).
-/// * `seed` - optional seed for deterministic output (used in tests).
-///
-/// Returns one recipe id per day. No recipe repeats within a plan. Unpinned
-/// days are filled preferring recipes with an older (or absent) `last_used`,
-/// while still being randomized so the rotation doesn't feel mechanical.
+/// Recipe selection keeps the original behavior where possible: pinned days are
+/// fixed, unpinned recipes are least-recently-used weighted, deterministic
+/// seeds are supported, and recipes do not repeat until the eligible pool for a
+/// role is exhausted. Sabjis receive the same no-repeat preference across the
+/// whole plan. Treat recipes are hard-capped at one per seven generated days.
 pub fn generate_rotation(
     recipes: &[Recipe],
     days: usize,
     tag_filters: &[String],
-    pinned: &HashMap<usize, i64>,
+    cuisine_filters: &[String],
+    pinned: &HashMap<usize, PlanDay>,
     seed: Option<u64>,
-) -> Result<Vec<i64>, RotationError> {
+) -> Result<Vec<PlanDay>, RotationError> {
     for &day in pinned.keys() {
         if day >= days {
             return Err(RotationError::DayOutOfRange(day, days));
         }
     }
 
-    let eligible = filter_by_tags(recipes, tag_filters);
-    let eligible_ids: HashSet<i64> = eligible.iter().map(|r| r.id).collect();
-
-    for &recipe_id in pinned.values() {
-        if !eligible_ids.contains(&recipe_id) {
-            return Err(RotationError::InvalidPin(recipe_id));
+    let eligible = filter_recipes(recipes, tag_filters, cuisine_filters);
+    let by_id: HashMap<i64, &Recipe> = eligible.iter().map(|r| (r.id, *r)).collect();
+    for pinned_day in pinned.values() {
+        for &recipe_id in &pinned_day.recipe_ids {
+            if !by_id.contains_key(&recipe_id) {
+                return Err(RotationError::InvalidPin(recipe_id));
+            }
         }
     }
 
-    if eligible.len() < days {
+    if eligible.is_empty() || !has_fillable_pattern(&eligible) {
         return Err(RotationError::NotEnoughRecipes {
-            needed: days,
+            needed: 1,
             available: eligible.len(),
+        });
+    }
+
+    let treat_limit = treat_limit(days);
+    let pinned_treats = pinned
+        .values()
+        .flat_map(|day| day.recipe_ids.iter())
+        .filter(|id| by_id.get(id).is_some_and(|r| r.treat))
+        .count();
+    if pinned_treats > treat_limit {
+        return Err(RotationError::TreatLimitExceeded {
+            limit: treat_limit,
+            days,
         });
     }
 
@@ -67,35 +95,213 @@ pub fn generate_rotation(
         None => SmallRng::from_entropy(),
     };
 
-    let mut used: HashSet<i64> = pinned.values().copied().collect();
-    let mut result: Vec<i64> = vec![0; days];
-    for (&day, &recipe_id) in pinned {
-        result[day] = recipe_id;
+    let mut plan: Vec<PlanDay> = vec![PlanDay::new(Vec::new()); days];
+    let mut used: HashSet<i64> = HashSet::new();
+    let mut used_sabjis: HashSet<i64> = HashSet::new();
+    let mut used_cuisines: HashSet<String> = HashSet::new();
+    let mut treat_count = 0usize;
+
+    for (&day, pinned_day) in pinned {
+        for &id in &pinned_day.recipe_ids {
+            if let Some(recipe) = by_id.get(&id) {
+                used.insert(id);
+                used_cuisines.insert(recipe.cuisine.clone());
+                if recipe.role == RecipeRole::Sabji {
+                    used_sabjis.insert(id);
+                }
+                if recipe.treat {
+                    treat_count += 1;
+                }
+            }
+        }
+        plan[day] = pinned_day.clone();
     }
 
-    // Candidates not pinned and not already used, ranked least-recently-used first.
-    let mut candidates: Vec<&Recipe> = eligible
-        .into_iter()
-        .filter(|r| !used.contains(&r.id))
-        .collect();
-    candidates.sort_by_key(|r| r.last_used.unwrap_or(i64::MIN));
-
-    #[allow(clippy::needless_range_loop)] // `day` is used as a pinned-map key, not just an index
+    #[allow(clippy::needless_range_loop)] // `day` is used as a pinned-map key.
     for day in 0..days {
         if pinned.contains_key(&day) {
             continue;
         }
-        // Weighted pick preferring the front (least-recently-used) of `candidates`
-        // via a triangular distribution over the rank, then remove it.
-        let n = candidates.len();
-        debug_assert!(n > 0);
-        let idx = weighted_lru_index(&mut rng, n);
-        let chosen = candidates.remove(idx);
-        used.insert(chosen.id);
-        result[day] = chosen.id;
+
+        let preferred_cuisine = preferred_cuisine(&eligible, &used_cuisines);
+        let mut picked = None;
+        for allow_repeats in [false, true] {
+            picked = fill_any_pattern(
+                &eligible,
+                &mut rng,
+                &used,
+                &used_sabjis,
+                treat_limit.saturating_sub(treat_count),
+                preferred_cuisine.as_deref(),
+                allow_repeats,
+            );
+            if picked.is_some() {
+                break;
+            }
+        }
+
+        let Some(day_plan) = picked else {
+            return Err(RotationError::NotEnoughRecipes {
+                needed: 1,
+                available: eligible.len(),
+            });
+        };
+
+        for id in &day_plan.recipe_ids {
+            if let Some(recipe) = by_id.get(id) {
+                used.insert(*id);
+                used_cuisines.insert(recipe.cuisine.clone());
+                if recipe.role == RecipeRole::Sabji {
+                    used_sabjis.insert(*id);
+                }
+                if recipe.treat {
+                    treat_count += 1;
+                }
+            }
+        }
+        plan[day] = day_plan;
     }
 
-    Ok(result)
+    Ok(plan)
+}
+
+pub fn reroll_day(
+    recipes: &[Recipe],
+    plan: &[PlanDay],
+    day: usize,
+    tag_filters: &[String],
+    cuisine_filters: &[String],
+    seed: Option<u64>,
+) -> Result<PlanDay, RotationError> {
+    if day >= plan.len() {
+        return Err(RotationError::DayOutOfRange(day, plan.len()));
+    }
+    let pinned: HashMap<usize, PlanDay> = plan
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != day)
+        .map(|(i, day)| (i, day.clone()))
+        .collect();
+    generate_rotation(
+        recipes,
+        plan.len(),
+        tag_filters,
+        cuisine_filters,
+        &pinned,
+        seed,
+    )
+    .map(|mut p| p.remove(day))
+}
+
+fn has_fillable_pattern(recipes: &[&Recipe]) -> bool {
+    PATTERNS.iter().any(|pattern| {
+        pattern
+            .iter()
+            .all(|role| recipes.iter().any(|r| r.role == *role))
+    })
+}
+
+fn fill_any_pattern(
+    recipes: &[&Recipe],
+    rng: &mut SmallRng,
+    used: &HashSet<i64>,
+    used_sabjis: &HashSet<i64>,
+    treat_remaining: usize,
+    preferred_cuisine: Option<&str>,
+    allow_repeats: bool,
+) -> Option<PlanDay> {
+    let mut patterns = PATTERNS.to_vec();
+    patterns.shuffle(rng);
+
+    for cuisine in [preferred_cuisine, None] {
+        for pattern in &patterns {
+            let mut temp_used = used.clone();
+            let mut picked = Vec::with_capacity(pattern.len());
+            let mut treats = 0usize;
+            let mut ok = true;
+
+            for &role in *pattern {
+                let remaining = treat_remaining.saturating_sub(treats);
+                let Some(recipe) = choose_recipe(
+                    recipes,
+                    role,
+                    rng,
+                    &temp_used,
+                    used_sabjis,
+                    remaining,
+                    cuisine,
+                    allow_repeats,
+                ) else {
+                    ok = false;
+                    break;
+                };
+                temp_used.insert(recipe.id);
+                treats += usize::from(recipe.treat);
+                picked.push(recipe.id);
+            }
+
+            if ok {
+                return Some(PlanDay::new(picked));
+            }
+        }
+    }
+    None
+}
+
+fn choose_recipe<'a>(
+    recipes: &[&'a Recipe],
+    role: RecipeRole,
+    rng: &mut SmallRng,
+    used: &HashSet<i64>,
+    used_sabjis: &HashSet<i64>,
+    treat_remaining: usize,
+    preferred_cuisine: Option<&str>,
+    allow_repeats: bool,
+) -> Option<&'a Recipe> {
+    let mut candidates: Vec<&Recipe> = recipes
+        .iter()
+        .copied()
+        .filter(|r| r.role == role)
+        .filter(|r| allow_repeats || !used.contains(&r.id))
+        .filter(|r| !r.treat || treat_remaining > 0)
+        .filter(|r| preferred_cuisine.is_none_or(|c| r.cuisine == c))
+        .collect();
+
+    if candidates.is_empty() && preferred_cuisine.is_some() {
+        candidates = recipes
+            .iter()
+            .copied()
+            .filter(|r| r.role == role)
+            .filter(|r| allow_repeats || !used.contains(&r.id))
+            .filter(|r| !r.treat || treat_remaining > 0)
+            .collect();
+    }
+
+    if role == RecipeRole::Sabji && candidates.iter().any(|r| !used_sabjis.contains(&r.id)) {
+        candidates.retain(|r| !used_sabjis.contains(&r.id));
+    }
+
+    candidates.sort_by_key(|r| r.last_used.unwrap_or(i64::MIN));
+    if candidates.is_empty() {
+        None
+    } else {
+        Some(candidates[weighted_lru_index(rng, candidates.len())])
+    }
+}
+
+fn preferred_cuisine(recipes: &[&Recipe], used_cuisines: &HashSet<String>) -> Option<String> {
+    let mut cuisines: Vec<String> = recipes.iter().map(|r| r.cuisine.clone()).collect();
+    cuisines.sort();
+    cuisines.dedup();
+    cuisines
+        .iter()
+        .find(|c| !used_cuisines.contains(*c))
+        .cloned()
+        .or_else(|| cuisines.first().cloned())
+}
+
+fn treat_limit(days: usize) -> usize {
+    days.div_ceil(7)
 }
 
 /// Pick an index in `0..n` with a bias toward smaller indices (which callers sort
@@ -115,51 +321,4 @@ fn weighted_lru_index(rng: &mut SmallRng, n: usize) -> usize {
         pick -= weight;
     }
     n - 1
-}
-
-/// Re-roll a single day of an existing plan, keeping every other day fixed and
-/// avoiding repeats against the rest of the plan.
-pub fn reroll_day(
-    recipes: &[Recipe],
-    plan: &[i64],
-    day: usize,
-    tag_filters: &[String],
-    seed: Option<u64>,
-) -> Result<i64, RotationError> {
-    if day >= plan.len() {
-        return Err(RotationError::DayOutOfRange(day, plan.len()));
-    }
-    let eligible = filter_by_tags(recipes, tag_filters);
-    let used: HashSet<i64> = plan
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != day)
-        .map(|(_, id)| *id)
-        .collect();
-
-    let mut candidates: Vec<&Recipe> = eligible
-        .into_iter()
-        .filter(|r| !used.contains(&r.id))
-        .collect();
-    if candidates.is_empty() {
-        return Err(RotationError::NotEnoughRecipes {
-            needed: 1,
-            available: 0,
-        });
-    }
-    candidates.sort_by_key(|r| r.last_used.unwrap_or(i64::MIN));
-
-    let mut rng: SmallRng = match seed {
-        Some(s) => SmallRng::seed_from_u64(s),
-        None => SmallRng::from_entropy(),
-    };
-    let idx = weighted_lru_index(&mut rng, candidates.len());
-    Ok(candidates[idx].id)
-}
-
-/// Shuffle helper kept separate so it can be unit tested independently of the
-/// LRU weighting above.
-#[allow(dead_code)]
-fn shuffle<T>(rng: &mut SmallRng, items: &mut [T]) {
-    items.shuffle(rng);
 }

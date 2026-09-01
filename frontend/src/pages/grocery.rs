@@ -58,11 +58,10 @@ pub fn GroceryPage() -> impl IntoView {
     let lines = move || {
         let db = state.db.get();
         let plan = state.current_plan.get();
-        let recipes: Vec<_> = db
-            .recipes
+        let recipes: Vec<_> = plan
             .iter()
-            .filter(|r| plan.contains(&r.id))
-            .cloned()
+            .flat_map(|day| day.recipe_ids.iter())
+            .filter_map(|id| db.recipes.iter().find(|r| r.id == *id).cloned())
             .collect();
         let ingredients: HashMap<i64, _> =
             db.ingredients.iter().map(|i| (i.id, i.clone())).collect();

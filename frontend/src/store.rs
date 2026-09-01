@@ -6,7 +6,7 @@
 
 use crate::db::{Conn, DbError, Value};
 use async_trait::async_trait;
-use shared::models::{Base, BaseMember, Database, Ingredient, RecipeItem, RefType};
+use shared::models::{Base, BaseMember, Database, Ingredient, RecipeItem, RecipeRole, RefType};
 use shared::Recipe;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,6 +15,8 @@ const MIGRATION_SCHEMA: &str = include_str!("../../migrations/0001_initial_schem
 const MIGRATION_SEED: &str = include_str!("../../migrations/0002_seed_data.sql");
 const MIGRATION_RENAME_BASES: &str =
     include_str!("../../migrations/0003_rename_clusters_to_bases.sql");
+const MIGRATION_ROLES_COMBOS: &str =
+    include_str!("../../migrations/0004_recipe_roles_combos_cuisine_treats.sql");
 const LOCAL_STORAGE_KEY: &str = "menu-db-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -90,6 +92,7 @@ impl SqliteWasmStore {
             conn.execute_batch(MIGRATION_SEED)?;
         }
         conn.execute_batch(MIGRATION_RENAME_BASES)?;
+        conn.execute_batch(MIGRATION_ROLES_COMBOS)?;
 
         if let Some(json) = stored {
             let db: Database = serde_json::from_str(&json)?;
@@ -174,7 +177,7 @@ fn read_bases(conn: &Conn) -> Result<Vec<Base>, StoreError> {
 
 fn read_recipes(conn: &Conn) -> Result<Vec<Recipe>, StoreError> {
     let rows = conn.query(
-        "SELECT id, name, tags, instructions, servings, last_used FROM recipes ORDER BY name",
+        "SELECT id, name, role, cuisine, treat, tags, instructions, servings, last_used FROM recipes ORDER BY name",
         &[],
     )?;
     let mut recipes: Vec<Recipe> = rows
@@ -182,10 +185,13 @@ fn read_recipes(conn: &Conn) -> Result<Vec<Recipe>, StoreError> {
         .map(|r| Recipe {
             id: r[0].as_i64(),
             name: r[1].as_str(),
-            tags: split_tags(&r[2].as_str()),
-            instructions: r[3].as_str(),
-            servings: r[4].as_i64() as i32,
-            last_used: r[5].as_opt_i64(),
+            role: RecipeRole::from(r[2].as_str().as_str()),
+            cuisine: r[3].as_str(),
+            treat: r[4].as_i64() != 0,
+            tags: split_tags(&r[5].as_str()),
+            instructions: r[6].as_str(),
+            servings: r[7].as_i64() as i32,
+            last_used: r[8].as_opt_i64(),
             items: vec![],
         })
         .collect();
@@ -266,10 +272,13 @@ fn restore_database(conn: &Conn, db: &Database) -> Result<(), StoreError> {
     }
     for recipe in &db.recipes {
         conn.execute(
-            "INSERT INTO recipes (id, name, tags, instructions, servings, last_used) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO recipes (id, name, role, cuisine, treat, tags, instructions, servings, last_used) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             &[
                 Value::Int(recipe.id),
                 Value::Text(recipe.name.clone()),
+                Value::Text(recipe.role.as_str().to_string()),
+                Value::Text(recipe.cuisine.clone()),
+                Value::Int(if recipe.treat { 1 } else { 0 }),
                 Value::Text(join_tags(&recipe.tags)),
                 Value::Text(recipe.instructions.clone()),
                 Value::Int(recipe.servings as i64),
@@ -390,9 +399,12 @@ impl Store for SqliteWasmStore {
         let conn = self.conn.borrow();
         let id = if recipe.id == 0 {
             conn.insert(
-                "INSERT INTO recipes (name, tags, instructions, servings, last_used) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO recipes (name, role, cuisine, treat, tags, instructions, servings, last_used) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 &[
                     Value::Text(recipe.name.clone()),
+                    Value::Text(recipe.role.as_str().to_string()),
+                    Value::Text(recipe.cuisine.clone()),
+                    Value::Int(if recipe.treat { 1 } else { 0 }),
                     Value::Text(join_tags(&recipe.tags)),
                     Value::Text(recipe.instructions.clone()),
                     Value::Int(recipe.servings as i64),
@@ -401,10 +413,13 @@ impl Store for SqliteWasmStore {
             )?
         } else {
             conn.execute(
-                "UPDATE recipes SET name = ?2, tags = ?3, instructions = ?4, servings = ?5, last_used = ?6 WHERE id = ?1",
+                "UPDATE recipes SET name = ?2, role = ?3, cuisine = ?4, treat = ?5, tags = ?6, instructions = ?7, servings = ?8, last_used = ?9 WHERE id = ?1",
                 &[
                     Value::Int(recipe.id),
                     Value::Text(recipe.name.clone()),
+                    Value::Text(recipe.role.as_str().to_string()),
+                    Value::Text(recipe.cuisine.clone()),
+                    Value::Int(if recipe.treat { 1 } else { 0 }),
                     Value::Text(join_tags(&recipe.tags)),
                     Value::Text(recipe.instructions.clone()),
                     Value::Int(recipe.servings as i64),

@@ -3,7 +3,7 @@ use crate::state::{use_app_state, View};
 use crate::store::Store;
 use leptos::prelude::*;
 use shared::grocery::format_quantity;
-use shared::models::{RecipeItem, RefType};
+use shared::models::{RecipeItem, RecipeRole, RefType};
 use shared::Recipe;
 
 /// A recipe's ingredient lines, shown exactly as authored: plain ingredients
@@ -100,6 +100,9 @@ pub fn RecipesPage() -> impl IntoView {
 
     let editing_id = RwSignal::new(0i64);
     let name = RwSignal::new(String::new());
+    let role = RwSignal::new(RecipeRole::OnePot.as_str().to_string());
+    let cuisine = RwSignal::new("gujarati".to_string());
+    let treat = RwSignal::new(false);
     let tags = RwSignal::new(String::new());
     let instructions = RwSignal::new(String::new());
     let servings = RwSignal::new("4".to_string());
@@ -115,6 +118,9 @@ pub fn RecipesPage() -> impl IntoView {
     let reset_form = move || {
         editing_id.set(0);
         name.set(String::new());
+        role.set(RecipeRole::OnePot.as_str().to_string());
+        cuisine.set("gujarati".to_string());
+        treat.set(false);
         tags.set(String::new());
         instructions.set(String::new());
         servings.set("4".to_string());
@@ -128,6 +134,9 @@ pub fn RecipesPage() -> impl IntoView {
     let edit = move |recipe: Recipe| {
         editing_id.set(recipe.id);
         name.set(recipe.name);
+        role.set(recipe.role.as_str().to_string());
+        cuisine.set(recipe.cuisine);
+        treat.set(recipe.treat);
         tags.set(recipe.tags.join(", "));
         instructions.set(recipe.instructions);
         servings.set(recipe.servings.to_string());
@@ -164,6 +173,9 @@ pub fn RecipesPage() -> impl IntoView {
         let recipe = Recipe {
             id: editing_id.get(),
             name: name.get(),
+            role: RecipeRole::from(role.get().as_str()),
+            cuisine: cuisine.get().trim().to_string(),
+            treat: treat.get(),
             tags: tags
                 .get()
                 .split(',')
@@ -177,6 +189,10 @@ pub fn RecipesPage() -> impl IntoView {
         };
         if recipe.name.trim().is_empty() {
             state_for_save.set_error("Recipe name is required");
+            return;
+        }
+        if recipe.cuisine.trim().is_empty() {
+            state_for_save.set_error("Cuisine is required");
             return;
         }
         // Preserve last_used when editing an existing recipe.
@@ -219,6 +235,23 @@ pub fn RecipesPage() -> impl IntoView {
                 <label>"Name" <input type="text"
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev)) /></label>
+                <label>"Role"
+                    <select prop:value=move || role.get()
+                        on:change=move |ev| role.set(event_target_value(&ev))>
+                        <For each=move || RecipeRole::ALL key=|r| r.as_str() let:recipe_role>
+                            <option value=recipe_role.as_str()>{recipe_role.label()}</option>
+                        </For>
+                    </select>
+                </label>
+                <label>"Cuisine" <input type="text" placeholder="gujarati"
+                    prop:value=move || cuisine.get()
+                    on:input=move |ev| cuisine.set(event_target_value(&ev)) /></label>
+                <label class="toggle">
+                    <input type="checkbox"
+                        prop:checked=move || treat.get()
+                        on:change=move |_| treat.update(|v| *v = !*v) />
+                    " Treat / cheat meal"
+                </label>
                 <label>"Tags (comma separated)" <input type="text" placeholder="vegetarian, quick, gujarati"
                     prop:value=move || tags.get()
                     on:input=move |ev| tags.set(event_target_value(&ev)) /></label>
@@ -327,7 +360,15 @@ pub fn RecipesPage() -> impl IntoView {
                                         })
                                     >{recipe.name.clone()}</button>
                                 </span>
-                                <span class="meta">{recipe.tags.join(", ")}</span>
+                                <span class="meta">
+                                    <span class="badge">{recipe.role.label()}</span>
+                                    " "
+                                    <span class="badge">{recipe.cuisine.clone()}</span>
+                                    " "
+                                    {recipe.treat.then(|| view! { <span class="badge">"treat"</span> })}
+                                    " "
+                                    {recipe.tags.join(", ")}
+                                </span>
                                 <span class="row-actions">
                                     <button type="button" on:click={
                                         let recipe = recipe.clone();

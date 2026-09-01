@@ -477,6 +477,20 @@ legend {
   font-weight: 500;
 }
 
+.day-recipes {
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.day-recipe {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
 /* A pinned/locked day gets the spice accent */
 .plan-list li.pinned {
   border-left-color: var(--spice);
