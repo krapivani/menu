@@ -125,7 +125,7 @@ pub fn group_by_category(lines: &[GroceryLine]) -> Vec<CategoryGroup> {
 }
 
 /// Render a quantity without a trailing `.0`, so a list reads "2 tbsp salt"
-/// rather than "2 tbsp salt".
+/// rather than "2.0 tbsp salt", while leaving "1.5" intact.
 pub fn format_quantity(quantity: f64) -> String {
     if (quantity.fract()).abs() < f64::EPSILON {
         format!("{}", quantity as i64)
