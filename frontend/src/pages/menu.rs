@@ -54,7 +54,11 @@ pub fn MenuPage() -> impl IntoView {
         let db = state_for_reroll.db.get();
         let current = plan.get();
         match shared::rotation::reroll_day(&db.recipes, &current, day, &tags, None) {
-            Ok(new_id) => plan.update(|p| p[day] = new_id),
+            Ok(new_id) => plan.update(|p| {
+                if let Some(slot) = p.get_mut(day) {
+                    *slot = new_id;
+                }
+            }),
             Err(e) => state_for_reroll.set_error(e.to_string()),
         }
     };

@@ -8,6 +8,18 @@ use sqlite_wasm_rs as ffi;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 
+/// SQLite's `SQLITE_TRANSIENT` destructor sentinel: passing this instead of a
+/// real function pointer tells SQLite to make its own private copy of a
+/// bound string/blob immediately, rather than assuming the pointer stays
+/// valid. It is conventionally the value `-1` cast to the destructor
+/// function-pointer type; `sqlite-wasm-rs` doesn't re-export it as a
+/// constant, so it's computed here once (as a function, since transmuting a
+/// non-null-but-non-function bit pattern can't be const-evaluated) and
+/// reused at every bind call site.
+fn sqlite_transient() -> ffi::sqlite3_destructor_type {
+    Some(unsafe { std::mem::transmute::<isize, unsafe extern "C" fn(*mut c_void)>(-1) })
+}
+
 /// A single bound parameter value.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -233,12 +245,9 @@ impl Conn {
                     let cs = CString::new(s.as_str()).map_err(|e| DbError(e.to_string()))?;
                     // SQLITE_TRANSIENT: tell sqlite to copy the string, since
                     // `cs` is freed at the end of this loop iteration.
-                    let transient: ffi::sqlite3_destructor_type = Some(unsafe {
-                        std::mem::transmute::<isize, unsafe extern "C" fn(*mut std::ffi::c_void)>(
-                            -1,
-                        )
-                    });
-                    unsafe { ffi::sqlite3_bind_text(stmt, idx, cs.as_ptr(), -1, transient) }
+                    unsafe {
+                        ffi::sqlite3_bind_text(stmt, idx, cs.as_ptr(), -1, sqlite_transient())
+                    }
                 }
             };
             if rc != ffi::SQLITE_OK {

@@ -41,6 +41,10 @@ impl From<serde_json::Error> for StoreError {
 pub trait Store {
     async fn load_database(&self) -> Result<Database, StoreError>;
 
+    /// Insert or update. Implementations treat `id == 0` as "not yet
+    /// persisted" (SQLite `AUTOINCREMENT` ids start at 1, so this is safe in
+    /// practice, but a JSON import that supplies a crafted `id: 0` would be
+    /// mistaken for a new record rather than updating an existing one).
     async fn save_ingredient(&self, ingredient: Ingredient) -> Result<Ingredient, StoreError>;
     async fn delete_ingredient(&self, id: i64) -> Result<(), StoreError>;
 
