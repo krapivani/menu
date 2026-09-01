@@ -6,29 +6,29 @@ use shared::grocery::{
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::{JsCast, JsValue};
 
-/// Copy text using the async clipboard API. Returns `false` when the browser
-/// doesn't expose it (older browsers, or an insecure origin), so the caller
-/// can fall back to the `.txt` download.
-fn copy_to_clipboard(text: &str) -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
+/// Start an async clipboard write, returning the pending promise. `None`
+/// means the browser doesn't expose the API at all (older browsers, or an
+/// insecure origin), so the caller can fall back to the `.txt` download.
+///
+/// `web-sys`' `Clipboard` binding is behind `web_sys_unstable_apis`, which
+/// would mean threading a `RUSTFLAGS` cfg through every build; reflecting on
+/// `navigator.clipboard` keeps the build plain.
+fn clipboard_write(text: &str) -> Option<js_sys::Promise> {
+    let window = web_sys::window()?;
     let navigator = window.navigator();
-    let Ok(clipboard) = js_sys::Reflect::get(&navigator, &JsValue::from_str("clipboard")) else {
-        return false;
-    };
+    let clipboard = js_sys::Reflect::get(&navigator, &JsValue::from_str("clipboard")).ok()?;
     if clipboard.is_undefined() || clipboard.is_null() {
-        return false;
+        return None;
     }
-    let Ok(write_text) = js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText")) else {
-        return false;
-    };
-    let Ok(write_text) = write_text.dyn_into::<js_sys::Function>() else {
-        return false;
-    };
+    let write_text = js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
     write_text
         .call1(&clipboard, &JsValue::from_str(text))
-        .is_ok()
+        .ok()?
+        .dyn_into::<js_sys::Promise>()
+        .ok()
 }
 
 /// Ask the browser to print the page. With the `@media print` rules in
@@ -95,15 +95,21 @@ pub fn GroceryPage() -> impl IntoView {
         }
     };
 
+    const CLIPBOARD_FALLBACK: &str =
+        "Couldn't copy in this browser — use the .txt download instead.";
+
     let copy = move |_| {
         let text = as_text();
-        if copy_to_clipboard(&text) {
-            status.set("Copied to clipboard.".to_string());
-        } else {
-            status.set(
-                "Clipboard unavailable in this browser — use the .txt download instead."
-                    .to_string(),
-            );
+        match clipboard_write(&text) {
+            // The write can still be rejected (denied permission), so wait
+            // for the promise before claiming success.
+            Some(promise) => leptos::task::spawn_local(async move {
+                match wasm_bindgen_futures::JsFuture::from(promise).await {
+                    Ok(_) => status.set("Copied to clipboard.".to_string()),
+                    Err(_) => status.set(CLIPBOARD_FALLBACK.to_string()),
+                }
+            }),
+            None => status.set(CLIPBOARD_FALLBACK.to_string()),
         }
     };
 

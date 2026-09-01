@@ -69,6 +69,7 @@ body {
   gap: 0.5rem;
   padding: 0.75rem 0 0.5rem;
   margin-bottom: 1.25rem;
+  flex-wrap: wrap;
 }
 
 /* Small decorative rule between the title and the nav actions */
@@ -93,7 +94,8 @@ body {
   border: none;
   background: none;
   padding: 0;
-  font-size: 1.35rem;
+  font-size: 1.2rem;
+  white-space: nowrap;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--accent);
@@ -123,6 +125,7 @@ body {
   border-radius: var(--radius-sm);
   font-size: 0.95rem;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -296,6 +299,14 @@ button.danger:hover {
   flex-wrap: wrap;
 }
 
+/* Primary and action-row buttons stay thumb-sized: this gets used
+   one-handed while shopping. */
+button.primary,
+.actions button,
+.plan-list button {
+  min-height: 2.75rem;
+}
+
 fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -396,6 +407,8 @@ legend {
 
 .tag-filter {
   display: inline-flex;
+  /* Sits inside `.card`, whose labels stack — tag filters read as a row */
+  flex-direction: row;
   align-items: center;
   gap: 0.35rem;
   margin: 0 0.75rem 0.4rem 0;
