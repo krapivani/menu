@@ -1,11 +1,13 @@
-use crate::state::use_app_state;
+use crate::state::{use_app_state, View};
 use crate::store::Store;
 use leptos::prelude::*;
 use shared::rotation::generate_rotation;
 use std::collections::{HashMap, HashSet};
 
+/// The primary screen: filter, generate a rotation, review it day by day, and
+/// — only once a plan exists — head to its grocery list.
 #[component]
-pub fn MenuPage() -> impl IntoView {
+pub fn HomePage() -> impl IntoView {
     let state = use_app_state();
 
     let days = RwSignal::new("7".to_string());
@@ -78,8 +80,11 @@ pub fn MenuPage() -> impl IntoView {
         });
     };
 
+    let state_for_grocery = state.clone();
+    let open_grocery = move |_| state_for_grocery.go(View::Grocery);
+
     view! {
-        <div class="menu-page">
+        <div class="home-page">
             <h2>"Generate Menu"</h2>
             <div class="card">
                 <label>"Days" <input type="number" min="1" max="14"
@@ -110,7 +115,7 @@ pub fn MenuPage() -> impl IntoView {
                     </For>
                 </fieldset>
 
-                <button on:click=generate>"Generate rotation"</button>
+                <button class="primary" on:click=generate>"Generate"</button>
             </div>
 
             <ol class="plan-list">
@@ -121,7 +126,7 @@ pub fn MenuPage() -> impl IntoView {
                     {
                         let (day, recipe_id) = entry;
                         view! {
-                            <li>
+                            <li class:pinned=move || pinned.get().contains_key(&day)>
                                 <span class="day">"Day " {day + 1}</span>
                                 <span class="name">{move || recipe_name(recipe_id)}</span>
                                 <label class="pin">
@@ -143,10 +148,16 @@ pub fn MenuPage() -> impl IntoView {
                 </For>
             </ol>
 
+            // The grocery list only exists once there is a plan to shop for,
+            // so its entry point appears here rather than in the top nav.
             {move || {
                 let use_plan = use_plan.clone();
+                let open_grocery = open_grocery.clone();
                 (!plan.get().is_empty()).then(|| view! {
-                    <button class="primary" on:click=use_plan>"Use this plan (mark recipes as used)"</button>
+                    <div class="actions plan-actions">
+                        <button class="primary" on:click=open_grocery>"View grocery list"</button>
+                        <button on:click=use_plan>"Use this plan (mark recipes as used)"</button>
+                    </div>
                 })
             }}
         </div>

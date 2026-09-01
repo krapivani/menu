@@ -41,7 +41,7 @@ pub fn DataPage() -> impl IntoView {
 
     view! {
         <div class="data-page">
-            <h2>"Data Export / Import"</h2>
+            <h2>"Backup & Restore"</h2>
             <p class="hint">
                 "The whole database lives in this browser (localStorage / OPFS). "
                 "Clearing site data will delete it, so export a backup regularly."

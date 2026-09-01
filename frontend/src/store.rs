@@ -6,13 +6,15 @@
 
 use crate::db::{Conn, DbError, Value};
 use async_trait::async_trait;
-use shared::models::{ClusterMember, Database, Ingredient, IngredientCluster, RecipeItem, RefType};
+use shared::models::{Base, BaseMember, Database, Ingredient, RecipeItem, RefType};
 use shared::Recipe;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 const MIGRATION_SCHEMA: &str = include_str!("../../migrations/0001_initial_schema.sql");
 const MIGRATION_SEED: &str = include_str!("../../migrations/0002_seed_data.sql");
+const MIGRATION_RENAME_BASES: &str =
+    include_str!("../../migrations/0003_rename_clusters_to_bases.sql");
 const LOCAL_STORAGE_KEY: &str = "menu-db-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -48,11 +50,8 @@ pub trait Store {
     async fn save_ingredient(&self, ingredient: Ingredient) -> Result<Ingredient, StoreError>;
     async fn delete_ingredient(&self, id: i64) -> Result<(), StoreError>;
 
-    async fn save_cluster(
-        &self,
-        cluster: IngredientCluster,
-    ) -> Result<IngredientCluster, StoreError>;
-    async fn delete_cluster(&self, id: i64) -> Result<(), StoreError>;
+    async fn save_base(&self, base: Base) -> Result<Base, StoreError>;
+    async fn delete_base(&self, id: i64) -> Result<(), StoreError>;
 
     async fn save_recipe(&self, recipe: Recipe) -> Result<Recipe, StoreError>;
     async fn delete_recipe(&self, id: i64) -> Result<(), StoreError>;
@@ -80,13 +79,21 @@ unsafe impl Sync for SqliteWasmStore {}
 impl SqliteWasmStore {
     pub fn new() -> Result<Self, StoreError> {
         let conn = Conn::open_memory()?;
-        conn.execute_batch(MIGRATION_SCHEMA)?;
 
-        if let Some(json) = local_storage_get(LOCAL_STORAGE_KEY) {
+        // Migrations are replayed in numeric order against the fresh
+        // in-memory database. The seed only runs when there is no snapshot to
+        // restore, and sits between 0001 and 0003 exactly as it would against
+        // a persistent database, so the rename migration converts it too.
+        conn.execute_batch(MIGRATION_SCHEMA)?;
+        let stored = local_storage_get(LOCAL_STORAGE_KEY);
+        if stored.is_none() {
+            conn.execute_batch(MIGRATION_SEED)?;
+        }
+        conn.execute_batch(MIGRATION_RENAME_BASES)?;
+
+        if let Some(json) = stored {
             let db: Database = serde_json::from_str(&json)?;
             restore_database(&conn, &db)?;
-        } else {
-            conn.execute_batch(MIGRATION_SEED)?;
         }
 
         Ok(Self {
@@ -111,11 +118,11 @@ impl SqliteWasmStore {
 
 fn read_database(conn: &Conn) -> Result<Database, StoreError> {
     let ingredients = read_ingredients(conn)?;
-    let clusters = read_clusters(conn)?;
+    let bases = read_bases(conn)?;
     let recipes = read_recipes(conn)?;
     Ok(Database {
         ingredients,
-        clusters,
+        bases,
         recipes,
     })
 }
@@ -137,35 +144,32 @@ fn read_ingredients(conn: &Conn) -> Result<Vec<Ingredient>, StoreError> {
         .collect())
 }
 
-fn read_clusters(conn: &Conn) -> Result<Vec<IngredientCluster>, StoreError> {
-    let rows = conn.query(
-        "SELECT id, name, description FROM ingredient_clusters ORDER BY name",
-        &[],
-    )?;
-    let mut clusters: Vec<IngredientCluster> = rows
+fn read_bases(conn: &Conn) -> Result<Vec<Base>, StoreError> {
+    let rows = conn.query("SELECT id, name, description FROM bases ORDER BY name", &[])?;
+    let mut bases: Vec<Base> = rows
         .into_iter()
-        .map(|r| IngredientCluster {
+        .map(|r| Base {
             id: r[0].as_i64(),
             name: r[1].as_str(),
             description: r[2].as_str(),
             members: vec![],
         })
         .collect();
-    for cluster in &mut clusters {
+    for base in &mut bases {
         let member_rows = conn.query(
-            "SELECT ingredient_id, quantity, unit FROM cluster_members WHERE cluster_id = ?1",
-            &[Value::Int(cluster.id)],
+            "SELECT ingredient_id, quantity, unit FROM base_members WHERE base_id = ?1",
+            &[Value::Int(base.id)],
         )?;
-        cluster.members = member_rows
+        base.members = member_rows
             .into_iter()
-            .map(|r| ClusterMember {
+            .map(|r| BaseMember {
                 ingredient_id: r[0].as_i64(),
                 quantity: r[1].as_f64(),
                 unit: r[2].as_str(),
             })
             .collect();
     }
-    Ok(clusters)
+    Ok(bases)
 }
 
 fn read_recipes(conn: &Conn) -> Result<Vec<Recipe>, StoreError> {
@@ -193,8 +197,8 @@ fn read_recipes(conn: &Conn) -> Result<Vec<Recipe>, StoreError> {
         recipe.items = item_rows
             .into_iter()
             .map(|r| RecipeItem {
-                ref_type: if r[0].as_str() == "cluster" {
-                    RefType::Cluster
+                ref_type: if r[0].as_str() == "base" {
+                    RefType::Base
                 } else {
                     RefType::Ingredient
                 },
@@ -223,7 +227,7 @@ fn join_tags(tags: &[String]) -> String {
 fn restore_database(conn: &Conn, db: &Database) -> Result<(), StoreError> {
     conn.execute_batch(
         "DELETE FROM recipe_items; DELETE FROM recipes; \
-         DELETE FROM cluster_members; DELETE FROM ingredient_clusters; \
+         DELETE FROM base_members; DELETE FROM bases; \
          DELETE FROM ingredients;",
     )?;
 
@@ -239,20 +243,20 @@ fn restore_database(conn: &Conn, db: &Database) -> Result<(), StoreError> {
             ],
         )?;
     }
-    for cluster in &db.clusters {
+    for base in &db.bases {
         conn.execute(
-            "INSERT INTO ingredient_clusters (id, name, description) VALUES (?1, ?2, ?3)",
+            "INSERT INTO bases (id, name, description) VALUES (?1, ?2, ?3)",
             &[
-                Value::Int(cluster.id),
-                Value::Text(cluster.name.clone()),
-                Value::Text(cluster.description.clone()),
+                Value::Int(base.id),
+                Value::Text(base.name.clone()),
+                Value::Text(base.description.clone()),
             ],
         )?;
-        for member in &cluster.members {
+        for member in &base.members {
             conn.execute(
-                "INSERT INTO cluster_members (cluster_id, ingredient_id, quantity, unit) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO base_members (base_id, ingredient_id, quantity, unit) VALUES (?1, ?2, ?3, ?4)",
                 &[
-                    Value::Int(cluster.id),
+                    Value::Int(base.id),
                     Value::Int(member.ingredient_id),
                     Value::Real(member.quantity),
                     Value::Text(member.unit.clone()),
@@ -279,7 +283,7 @@ fn restore_database(conn: &Conn, db: &Database) -> Result<(), StoreError> {
                     Value::Int(recipe.id),
                     Value::Text(match item.ref_type {
                         RefType::Ingredient => "ingredient".to_string(),
-                        RefType::Cluster => "cluster".to_string(),
+                        RefType::Base => "base".to_string(),
                     }),
                     Value::Int(item.ref_id),
                     Value::Real(item.quantity),
@@ -334,37 +338,34 @@ impl Store for SqliteWasmStore {
         self.persist()
     }
 
-    async fn save_cluster(
-        &self,
-        cluster: IngredientCluster,
-    ) -> Result<IngredientCluster, StoreError> {
+    async fn save_base(&self, base: Base) -> Result<Base, StoreError> {
         let conn = self.conn.borrow();
-        let id = if cluster.id == 0 {
+        let id = if base.id == 0 {
             conn.insert(
-                "INSERT INTO ingredient_clusters (name, description) VALUES (?1, ?2)",
+                "INSERT INTO bases (name, description) VALUES (?1, ?2)",
                 &[
-                    Value::Text(cluster.name.clone()),
-                    Value::Text(cluster.description.clone()),
+                    Value::Text(base.name.clone()),
+                    Value::Text(base.description.clone()),
                 ],
             )?
         } else {
             conn.execute(
-                "UPDATE ingredient_clusters SET name = ?2, description = ?3 WHERE id = ?1",
+                "UPDATE bases SET name = ?2, description = ?3 WHERE id = ?1",
                 &[
-                    Value::Int(cluster.id),
-                    Value::Text(cluster.name.clone()),
-                    Value::Text(cluster.description.clone()),
+                    Value::Int(base.id),
+                    Value::Text(base.name.clone()),
+                    Value::Text(base.description.clone()),
                 ],
             )?;
-            cluster.id
+            base.id
         };
         conn.execute(
-            "DELETE FROM cluster_members WHERE cluster_id = ?1",
+            "DELETE FROM base_members WHERE base_id = ?1",
             &[Value::Int(id)],
         )?;
-        for member in &cluster.members {
+        for member in &base.members {
             conn.execute(
-                "INSERT INTO cluster_members (cluster_id, ingredient_id, quantity, unit) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO base_members (base_id, ingredient_id, quantity, unit) VALUES (?1, ?2, ?3, ?4)",
                 &[
                     Value::Int(id),
                     Value::Int(member.ingredient_id),
@@ -375,14 +376,13 @@ impl Store for SqliteWasmStore {
         }
         drop(conn);
         self.persist()?;
-        Ok(IngredientCluster { id, ..cluster })
+        Ok(Base { id, ..base })
     }
 
-    async fn delete_cluster(&self, id: i64) -> Result<(), StoreError> {
-        self.conn.borrow().execute(
-            "DELETE FROM ingredient_clusters WHERE id = ?1",
-            &[Value::Int(id)],
-        )?;
+    async fn delete_base(&self, id: i64) -> Result<(), StoreError> {
+        self.conn
+            .borrow()
+            .execute("DELETE FROM bases WHERE id = ?1", &[Value::Int(id)])?;
         self.persist()
     }
 
@@ -424,7 +424,7 @@ impl Store for SqliteWasmStore {
                     Value::Int(id),
                     Value::Text(match item.ref_type {
                         RefType::Ingredient => "ingredient".to_string(),
-                        RefType::Cluster => "cluster".to_string(),
+                        RefType::Base => "base".to_string(),
                     }),
                     Value::Int(item.ref_id),
                     Value::Real(item.quantity),
@@ -465,7 +465,7 @@ impl Store for SqliteWasmStore {
 }
 
 /// Read a key from `window.localStorage`, if available.
-fn local_storage_get(key: &str) -> Option<String> {
+pub fn local_storage_get(key: &str) -> Option<String> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
     storage.get_item(key).ok()?
@@ -474,7 +474,7 @@ fn local_storage_get(key: &str) -> Option<String> {
 /// Best-effort write to `window.localStorage`. Silently ignored if
 /// unavailable (e.g. privacy mode) — data still lives for the session in the
 /// in-memory database.
-fn local_storage_set(key: &str, value: &str) {
+pub fn local_storage_set(key: &str, value: &str) {
     if let Some(window) = web_sys::window() {
         if let Ok(Some(storage)) = window.local_storage() {
             let _ = storage.set_item(key, value);

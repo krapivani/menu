@@ -1,4 +1,4 @@
-use crate::models::{Ingredient, IngredientCluster, Recipe, RefType};
+use crate::models::{Base, Ingredient, Recipe, RefType};
 use std::collections::HashMap;
 
 /// One consolidated line on the grocery list.
@@ -14,10 +14,10 @@ pub struct GroceryLine {
 
 /// Build a consolidated grocery list from a set of selected recipes.
 ///
-/// * `expand_clusters` - when `true` (the default UI behavior), clusters are
+/// * `expand_bases` - when `true` (the default UI behavior), bases are
 ///   expanded into their member ingredients, scaled by the quantity of the
-///   cluster the recipe called for, and merged with any individually-listed
-///   ingredients of the same name and unit. When `false`, clusters are kept
+///   base the recipe called for, and merged with any individually-listed
+///   ingredients of the same name and unit. When `false`, bases are kept
 ///   as single line items (for shoppers who buy pre-made pastes/blends).
 ///
 /// Lines are merged only when both the (case-insensitive) name and unit
@@ -26,8 +26,8 @@ pub struct GroceryLine {
 pub fn build_grocery_list(
     recipes: &[Recipe],
     ingredients: &HashMap<i64, Ingredient>,
-    clusters: &HashMap<i64, IngredientCluster>,
-    expand_clusters: bool,
+    bases: &HashMap<i64, Base>,
+    expand_bases: bool,
 ) -> Vec<GroceryLine> {
     // Keyed by (lowercase name, lowercase unit) to merge compatible lines.
     let mut merged: HashMap<(String, String), GroceryLine> = HashMap::new();
@@ -61,10 +61,10 @@ pub fn build_grocery_list(
                         );
                     }
                 }
-                RefType::Cluster => {
-                    if let Some(cluster) = clusters.get(&item.ref_id) {
-                        if expand_clusters {
-                            for member in &cluster.members {
+                RefType::Base => {
+                    if let Some(base) = bases.get(&item.ref_id) {
+                        if expand_bases {
+                            for member in &base.members {
                                 if let Some(ing) = ingredients.get(&member.ingredient_id) {
                                     let scaled = member.quantity * item.quantity;
                                     upsert(
@@ -77,13 +77,7 @@ pub fn build_grocery_list(
                                 }
                             }
                         } else {
-                            upsert(
-                                &cluster.name,
-                                item.quantity,
-                                &item.unit,
-                                "cluster",
-                                "various",
-                            );
+                            upsert(&base.name, item.quantity, &item.unit, "base", "various");
                         }
                     }
                 }
@@ -128,4 +122,42 @@ pub fn group_by_category(lines: &[GroceryLine]) -> Vec<CategoryGroup> {
         aisle_entry.1.push(line.clone());
     }
     categories
+}
+
+/// Render a quantity without a trailing `.0`, so a list reads "2 tbsp salt"
+/// rather than "2 tbsp salt".
+pub fn format_quantity(quantity: f64) -> String {
+    if (quantity.fract()).abs() < f64::EPSILON {
+        format!("{}", quantity as i64)
+    } else {
+        format!("{quantity}")
+    }
+}
+
+/// Render a grocery list as plain text grouped by category and aisle, for
+/// pasting into a notes app or saving as a `.txt` file. `extras` are ad-hoc
+/// items the user added by hand, listed under their own heading.
+pub fn grocery_list_to_text(lines: &[GroceryLine], extras: &[String]) -> String {
+    let mut out = String::from("Grocery list\n");
+    for (category, aisles) in group_by_category(lines) {
+        out.push_str(&format!("\n{category}\n"));
+        for (aisle, aisle_lines) in aisles {
+            out.push_str(&format!("  {aisle}\n"));
+            for line in aisle_lines {
+                out.push_str(&format!(
+                    "    - {} {} {}\n",
+                    format_quantity(line.quantity),
+                    line.unit,
+                    line.name
+                ));
+            }
+        }
+    }
+    if !extras.is_empty() {
+        out.push_str("\nOther items\n");
+        for extra in extras {
+            out.push_str(&format!("    - {extra}\n"));
+        }
+    }
+    out
 }
