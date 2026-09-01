@@ -1,6 +1,6 @@
 use crate::store::{local_storage_get, local_storage_set, SqliteWasmStore, Store};
 use leptos::prelude::*;
-use shared::models::Database;
+use shared::models::{Database, PlanDay};
 use std::sync::Arc;
 
 const EXTRA_ITEMS_KEY: &str = "menu-extra-items-v1";
@@ -33,9 +33,9 @@ pub struct AppState {
     /// (default) or show them as single line items.
     pub expand_bases: RwSignal<bool>,
     pub error: RwSignal<Option<String>>,
-    /// The most recently generated menu plan (recipe ids, one per day),
+    /// The most recently generated menu plan (recipe ids grouped by day),
     /// consumed by the Grocery List page.
-    pub current_plan: RwSignal<Vec<i64>>,
+    pub current_plan: RwSignal<Vec<PlanDay>>,
     /// Ad-hoc grocery items typed by hand (milk, bin bags) that aren't
     /// derived from any recipe. Persisted to `localStorage` so they survive a
     /// reload alongside the database snapshot.

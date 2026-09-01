@@ -1,7 +1,7 @@
 # menu
 
-Help organize dinner menu and grocery: pick a random weekly dinner rotation
-from a recipe library and turn it into a consolidated grocery list.
+Help organize dinner menu and grocery: generate dinner plates from a recipe
+library and turn them into a consolidated grocery list.
 
 The whole app is a static site — a [Leptos](https://leptos.dev) single-page
 app compiled to WebAssembly, with its data stored in a SQLite database that
@@ -32,9 +32,9 @@ root `Cargo.toml` sets `default-members = ["shared"]` so a plain
 The app is organised around the workflow — generate a menu, review it, shop
 from it — rather than a flat row of tabs:
 
-- **Home** is the *Generate Menu* screen: tag filters, number of days, a
-  **Generate** button, and the resulting plan listed per day with per-day
-  re-roll and pin/lock.
+- **Home** is the *Generate Menu* screen: tag and cuisine filters, number of
+  days, a **Generate** button, and the resulting plan listed per day with
+  grouped recipes, per-day re-roll, and pin/lock.
 - **View grocery list** appears on Home only *after* a menu has been
   generated — the grocery list is not a destination of its own, because it
   has nothing to show without a plan.
@@ -67,17 +67,19 @@ blocks of ingredients that are almost always used together
 - `bases (id, name, description)`
 - `base_members (base_id, ingredient_id, quantity, unit)` — the
   proportions of each ingredient within a base
-- `recipes (id, name, tags, instructions, servings, last_used)`
+- `recipes (id, name, role, cuisine, treat, tags, instructions, servings,
+  last_used)`
 - `recipe_items (recipe_id, ref_type CHECK IN ('ingredient','base'),
   ref_id, quantity, unit)` — each recipe line references *either* a single
   ingredient or a whole base
 
 SQL migrations live in [`/migrations`](./migrations) and are applied on
 first load, tracked via `PRAGMA user_version` (schema in
-`0001_initial_schema.sql`, seed data — 22 ingredients, 4 bases, 15 example
-recipes — in `0002_seed_data.sql`, and the `cluster` → `base` rename in
-`0003_rename_clusters_to_bases.sql`). They're plain, portable SQL (no
-SQLite-only syntax where a standard alternative exists) so they can be
+`0001_initial_schema.sql`, placeholder seed data in `0002_seed_data.sql`, the
+`cluster` → `base` rename in `0003_rename_clusters_to_bases.sql`, and the
+role/cuisine/treat + Gujarati recipe seed in
+`0004_recipe_roles_combos_cuisine_treats.sql`). They're plain, portable SQL
+(no SQLite-only syntax where a standard alternative exists) so they can be
 replayed unmodified against a hosted database later (see below).
 
 JSON exported before the rename still imports: the `clusters` key and the
@@ -85,26 +87,44 @@ JSON exported before the rename still imports: the `clusters` key and the
 
 ### Grocery list logic
 
-Building a grocery list expands each recipe's base references into their
-member ingredients, scaling each member's quantity by the amount of base
-called for, then merges lines with the same ingredient name and a
-compatible unit (case-insensitive). Ingredients with incompatible units stay
-on separate lines rather than being silently combined. For example, a recipe
-calling for `ginger-garlic-chilli paste` and another calling for plain
-`ginger paste` produce a single combined `ginger paste` line. The grocery
-list has a toggle to show expanded individual ingredients (the default)
-or show bases as single line items instead, for people who buy the paste
-pre-made. Recipe *display* is the other way round — base-first, never
-flattened — so a recipe reads the way it was written.
+Building a grocery list expands every recipe in every generated day. Base
+references are expanded into their member ingredients, scaling each member's
+quantity by the amount of base called for, then merged with lines with the
+same ingredient name and a compatible unit (case-insensitive). Ingredients
+with incompatible units stay on separate lines rather than being silently
+combined. For example, a recipe calling for `garlic base` and another calling
+for plain `ginger` can still produce combined ginger lines when the units
+match. The grocery list has a toggle to show expanded individual ingredients
+(the default) or show bases as single line items instead, for people who buy
+the paste pre-made. Recipe *display* is the other way round — base-first,
+never flattened — so a recipe reads the way it was written.
 
 ### Rotation logic
 
-Generating a menu picks recipes at random with no repeats within the plan,
-using a least-recently-used weighting (via each recipe's `last_used`
-timestamp) so the same handful of recipes don't dominate every week. It
-supports tag filters (e.g. `vegetarian`, `quick`, `beef` — a recipe must
-have *all* requested tags), pinned/locked days that are left untouched, and
-a per-day re-roll. A deterministic seed can be passed in for tests.
+Each recipe has a dinner `role`: `dal`, `kadhi`, `rice`, `sabji`, `roti`, or
+`one_pot`. Generating a menu picks one of these dinner patterns per day, then
+fills each slot from matching recipes:
+
+- `dal + rice + sabji`
+- `kadhi + rice + sabji`
+- `sabji + roti`
+- `one_pot`
+
+Unpinned slots are least-recently-used weighted (via each recipe's
+`last_used` timestamp). The generator avoids recipe repeats while there are
+unused eligible recipes for a slot, rotates sabjis across the plan, supports
+tag filters and cuisine filters, and keeps pinned/locked days untouched.
+Per-day re-roll replaces the whole grouped day with a new pattern and fills.
+A deterministic seed can be passed in for tests.
+
+Cuisine is separate from role and tags. The generator prefers cuisines that
+have not appeared yet in the plan, then repeats once it runs out of distinct
+eligible cuisines. The current starter data is all `gujarati`, so repeated
+Gujarati days are expected.
+
+Treats/cheat meals are also separate from cuisine. Pani puri and the seeded
+sandwiches are Gujarati, but flagged as `treat: true`; generation caps treats
+to at most one per seven days.
 
 ## Local development
 
