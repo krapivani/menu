@@ -1,8 +1,98 @@
-use crate::state::use_app_state;
+use crate::pages::bases::BaseEditor;
+use crate::state::{use_app_state, View};
 use crate::store::Store;
 use leptos::prelude::*;
+use shared::grocery::format_quantity;
 use shared::models::{RecipeItem, RefType};
 use shared::Recipe;
+
+/// A recipe's ingredient lines, shown exactly as authored: plain ingredients
+/// as themselves, and a base as a single named line. Base lines expand
+/// in-place to reveal their members and scaled quantities, rather than being
+/// flattened into them.
+#[component]
+fn RecipeItemList(items: Vec<RecipeItem>) -> impl IntoView {
+    let state = use_app_state();
+    let expanded = RwSignal::new(None::<i64>);
+
+    view! {
+        <ul class="recipe-items">
+            <For each={move || items.clone().into_iter().enumerate().collect::<Vec<_>>()}
+                key=|(i, item)| (*i, item.ref_id)
+                let:entry
+            >
+                {
+                    let (_, item) = entry;
+                    match item.ref_type {
+                        RefType::Ingredient => {
+                            let name = move || state.db.get().ingredients.iter()
+                                .find(|i| i.id == item.ref_id)
+                                .map(|i| i.name.clone())
+                                .unwrap_or_else(|| "unknown ingredient".to_string());
+                            view! {
+                                <li class="recipe-item">
+                                    <span class="name">{name}</span>
+                                    <span class="meta">{format_quantity(item.quantity)} " " {item.unit.clone()}</span>
+                                </li>
+                            }.into_any()
+                        }
+                        RefType::Base => {
+                            let base = move || state.db.get().bases.iter()
+                                .find(|b| b.id == item.ref_id)
+                                .cloned();
+                            let is_open = move || expanded.get() == Some(item.ref_id);
+                            let state_for_open = state.clone();
+                            view! {
+                                <li class="recipe-item recipe-item-base">
+                                    <button type="button" class="base-line"
+                                        aria-expanded=move || is_open().to_string()
+                                        on:click=move |_| expanded.update(|e| {
+                                            *e = if *e == Some(item.ref_id) { None } else { Some(item.ref_id) };
+                                        })
+                                    >
+                                        <span class="badge badge-base">"base"</span>
+                                        <span class="name">
+                                            {move || base().map(|b| b.name).unwrap_or_else(|| "unknown base".to_string())}
+                                        </span>
+                                        <span class="meta">{format_quantity(item.quantity)} " " {item.unit.clone()}</span>
+                                        <span class="chevron">{move || if is_open() { "▾" } else { "▸" }}</span>
+                                    </button>
+                                    {move || is_open().then(|| {
+                                        let members = base().map(|b| b.members).unwrap_or_default();
+                                        let state_for_link = state_for_open.clone();
+                                        view! {
+                                            <div class="base-members">
+                                                <ul class="recipe-items">
+                                                    <For each=move || members.clone() key=|m| m.ingredient_id let:member>
+                                                        <li class="recipe-item">
+                                                            <span class="name">
+                                                                {move || state.db.get().ingredients.iter()
+                                                                    .find(|i| i.id == member.ingredient_id)
+                                                                    .map(|i| i.name.clone())
+                                                                    .unwrap_or_else(|| "unknown ingredient".to_string())}
+                                                            </span>
+                                                            <span class="meta">
+                                                                {format_quantity(member.quantity * item.quantity)}
+                                                                " " {member.unit.clone()}
+                                                            </span>
+                                                        </li>
+                                                    </For>
+                                                </ul>
+                                                <button type="button" class="link-button"
+                                                    on:click=move |_| state_for_link.go(View::Base(item.ref_id))
+                                                >"Open base"</button>
+                                            </div>
+                                        }
+                                    })}
+                                </li>
+                            }.into_any()
+                        }
+                    }
+                }
+            </For>
+        </ul>
+    }
+}
 
 #[component]
 pub fn RecipesPage() -> impl IntoView {
@@ -14,6 +104,8 @@ pub fn RecipesPage() -> impl IntoView {
     let instructions = RwSignal::new(String::new());
     let servings = RwSignal::new("4".to_string());
     let items = RwSignal::new(Vec::<RecipeItem>::new());
+    let show_base_editor = RwSignal::new(false);
+    let opened_recipe = RwSignal::new(None::<i64>);
 
     let item_ref_type = RwSignal::new("ingredient".to_string());
     let item_ref_id = RwSignal::new(0i64);
@@ -49,8 +141,8 @@ pub fn RecipesPage() -> impl IntoView {
         if ref_id == 0 || quantity <= 0.0 || unit.trim().is_empty() {
             return;
         }
-        let ref_type = if item_ref_type.get() == "cluster" {
-            RefType::Cluster
+        let ref_type = if item_ref_type.get() == "base" {
+            RefType::Base
         } else {
             RefType::Ingredient
         };
@@ -127,7 +219,7 @@ pub fn RecipesPage() -> impl IntoView {
                 <label>"Name" <input type="text"
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev)) /></label>
-                <label>"Tags (comma separated)" <input type="text" placeholder="vegetarian, quick, chicken"
+                <label>"Tags (comma separated)" <input type="text" placeholder="vegetarian, quick, gujarati"
                     prop:value=move || tags.get()
                     on:input=move |ev| tags.set(event_target_value(&ev)) /></label>
                 <label>"Servings" <input type="number" min="1"
@@ -138,7 +230,7 @@ pub fn RecipesPage() -> impl IntoView {
                     on:input=move |ev| instructions.set(event_target_value(&ev))></textarea></label>
 
                 <fieldset>
-                    <legend>"Ingredients / clusters"</legend>
+                    <legend>"Ingredients & bases"</legend>
                     <ul class="entity-list">
                         <For each={move || items.get().into_iter().enumerate().collect::<Vec<_>>()}
                             key=|(i, it)| (*i, it.ref_id)
@@ -153,16 +245,21 @@ pub fn RecipesPage() -> impl IntoView {
                                             .find(|i| i.id == item.ref_id)
                                             .map(|i| i.name.clone())
                                             .unwrap_or_else(|| "unknown ingredient".to_string()),
-                                        RefType::Cluster => db.clusters.iter()
-                                            .find(|c| c.id == item.ref_id)
-                                            .map(|c| format!("{} (cluster)", c.name))
-                                            .unwrap_or_else(|| "unknown cluster".to_string()),
+                                        RefType::Base => db.bases.iter()
+                                            .find(|b| b.id == item.ref_id)
+                                            .map(|b| b.name.clone())
+                                            .unwrap_or_else(|| "unknown base".to_string()),
                                     }
                                 };
+                                let is_base = item.ref_type == RefType::Base;
                                 view! {
                                     <li>
-                                        <span class="name">{label}</span>
-                                        <span class="meta">{item.quantity} " " {item.unit.clone()}</span>
+                                        <span class="name">
+                                            {is_base.then(|| view! { <span class="badge badge-base">"base"</span> })}
+                                            " "
+                                            {label}
+                                        </span>
+                                        <span class="meta">{format_quantity(item.quantity)} " " {item.unit.clone()}</span>
                                         <button type="button" on:click=move |_| {
                                             items.update(|list| { list.remove(idx); });
                                         }>"Remove"</button>
@@ -175,15 +272,15 @@ pub fn RecipesPage() -> impl IntoView {
                     <div class="member-add">
                         <select on:change=move |ev| item_ref_type.set(event_target_value(&ev))>
                             <option value="ingredient">"Ingredient"</option>
-                            <option value="cluster">"Cluster"</option>
+                            <option value="base">"Base"</option>
                         </select>
                         <select on:change=move |ev| {
                             item_ref_id.set(event_target_value(&ev).parse().unwrap_or(0));
                         }>
                             <option value="0">"Choose..."</option>
-                            {move || if item_ref_type.get() == "cluster" {
-                                state.db.get().clusters.iter()
-                                    .map(|c| view! { <option value=c.id.to_string()>{c.name.clone()}</option> })
+                            {move || if item_ref_type.get() == "base" {
+                                state.db.get().bases.iter()
+                                    .map(|b| view! { <option value=b.id.to_string()>{b.name.clone()}</option> })
                                     .collect::<Vec<_>>()
                             } else {
                                 state.db.get().ingredients.iter()
@@ -199,6 +296,13 @@ pub fn RecipesPage() -> impl IntoView {
                             on:input=move |ev| item_unit.set(event_target_value(&ev)) />
                         <button type="button" on:click=add_item>"Add item"</button>
                     </div>
+
+                    // Bases have no top-level destination; they're managed
+                    // right here, where they get used.
+                    <button type="button" class="link-button"
+                        on:click=move |_| show_base_editor.update(|v| *v = !*v)
+                    >{move || if show_base_editor.get() { "Hide bases" } else { "Manage bases" }}</button>
+                    {move || show_base_editor.get().then(|| view! { <BaseEditor /> })}
                 </fieldset>
 
                 <div class="actions">
@@ -209,17 +313,35 @@ pub fn RecipesPage() -> impl IntoView {
 
             <ul class="entity-list">
                 <For each=move || state.db.get().recipes key=|r| r.id let:recipe>
-                    <li>
-                        <span class="name">{recipe.name.clone()}</span>
-                        <span class="meta">{recipe.tags.join(", ")}</span>
-                        <span class="row-actions">
-                            <button on:click={
-                                let recipe = recipe.clone();
-                                move |_| edit(recipe.clone())
-                            }>"Edit"</button>
-                            <button on:click={let delete = delete.clone(); move |_| delete(recipe.id)}>"Delete"</button>
-                        </span>
-                    </li>
+                    {
+                        let recipe_items = recipe.items.clone();
+                        let recipe_id = recipe.id;
+                        let is_open = move || opened_recipe.get() == Some(recipe_id);
+                        view! {
+                            <li class="recipe-row">
+                                <span class="name">
+                                    <button type="button" class="link-button"
+                                        aria-expanded=move || is_open().to_string()
+                                        on:click=move |_| opened_recipe.update(|o| {
+                                            *o = if *o == Some(recipe_id) { None } else { Some(recipe_id) };
+                                        })
+                                    >{recipe.name.clone()}</button>
+                                </span>
+                                <span class="meta">{recipe.tags.join(", ")}</span>
+                                <span class="row-actions">
+                                    <button type="button" on:click={
+                                        let recipe = recipe.clone();
+                                        move |_| edit(recipe.clone())
+                                    }>"Edit"</button>
+                                    <button type="button" on:click={let delete = delete.clone(); move |_| delete(recipe_id)}>"Delete"</button>
+                                </span>
+                                {move || is_open().then(|| {
+                                    let items = recipe_items.clone();
+                                    view! { <RecipeItemList items=items /> }
+                                })}
+                            </li>
+                        }
+                    }
                 </For>
             </ul>
         </div>

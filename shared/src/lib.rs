@@ -2,9 +2,11 @@ pub mod grocery;
 pub mod models;
 pub mod rotation;
 
-pub use grocery::{build_grocery_list, group_by_category, GroceryLine};
+pub use grocery::{
+    build_grocery_list, format_quantity, grocery_list_to_text, group_by_category, GroceryLine,
+};
 pub use models::Recipe;
-pub use models::{ClusterMember, Database, Ingredient, IngredientCluster, RecipeItem, RefType};
+pub use models::{Base, BaseMember, Database, Ingredient, RecipeItem, RefType};
 pub use rotation::{generate_rotation, reroll_day, RotationError};
 
 #[cfg(test)]
@@ -108,32 +110,32 @@ mod tests {
     }
 
     #[test]
-    fn cluster_expansion_scales_member_quantities() {
+    fn base_expansion_scales_member_quantities() {
         let ginger = ingredient(1, "ginger paste", "spice", "produce");
         let garlic = ingredient(2, "garlic paste", "spice", "produce");
         let mut ingredients = HashMap::new();
         ingredients.insert(1, ginger);
         ingredients.insert(2, garlic);
 
-        let cluster = IngredientCluster {
+        let base = Base {
             id: 100,
             name: "ginger-garlic-chilli paste".to_string(),
             description: "".to_string(),
             members: vec![
-                ClusterMember {
+                BaseMember {
                     ingredient_id: 1,
                     quantity: 1.0,
                     unit: "tbsp".to_string(),
                 },
-                ClusterMember {
+                BaseMember {
                     ingredient_id: 2,
                     quantity: 1.0,
                     unit: "tbsp".to_string(),
                 },
             ],
         };
-        let mut clusters = HashMap::new();
-        clusters.insert(100, cluster);
+        let mut bases = HashMap::new();
+        bases.insert(100, base);
 
         let recipe = Recipe {
             id: 1,
@@ -143,39 +145,39 @@ mod tests {
             servings: 4,
             last_used: None,
             items: vec![RecipeItem {
-                ref_type: RefType::Cluster,
+                ref_type: RefType::Base,
                 ref_id: 100,
                 quantity: 2.0,
                 unit: "batch".to_string(),
             }],
         };
 
-        let lines = build_grocery_list(&[recipe], &ingredients, &clusters, true);
+        let lines = build_grocery_list(&[recipe], &ingredients, &bases, true);
         let ginger_line = lines.iter().find(|l| l.name == "ginger paste").unwrap();
         assert_eq!(ginger_line.quantity, 2.0);
         assert_eq!(ginger_line.unit, "tbsp");
     }
 
     #[test]
-    fn expanded_cluster_members_merge_with_individual_ingredients() {
+    fn expanded_base_members_merge_with_individual_ingredients() {
         let ginger = ingredient(1, "ginger paste", "spice", "produce");
         let mut ingredients = HashMap::new();
         ingredients.insert(1, ginger);
 
-        let cluster = IngredientCluster {
+        let base = Base {
             id: 100,
             name: "ginger-garlic-chilli paste".to_string(),
             description: "".to_string(),
-            members: vec![ClusterMember {
+            members: vec![BaseMember {
                 ingredient_id: 1,
                 quantity: 1.0,
                 unit: "tbsp".to_string(),
             }],
         };
-        let mut clusters = HashMap::new();
-        clusters.insert(100, cluster);
+        let mut bases = HashMap::new();
+        bases.insert(100, base);
 
-        let recipe_with_cluster = Recipe {
+        let recipe_with_base = Recipe {
             id: 1,
             name: "curry".to_string(),
             tags: vec![],
@@ -183,7 +185,7 @@ mod tests {
             servings: 4,
             last_used: None,
             items: vec![RecipeItem {
-                ref_type: RefType::Cluster,
+                ref_type: RefType::Base,
                 ref_id: 100,
                 quantity: 1.0,
                 unit: "batch".to_string(),
@@ -205,9 +207,9 @@ mod tests {
         };
 
         let lines = build_grocery_list(
-            &[recipe_with_cluster, recipe_with_plain],
+            &[recipe_with_base, recipe_with_plain],
             &ingredients,
-            &clusters,
+            &bases,
             true,
         );
         let ginger_lines: Vec<_> = lines.iter().filter(|l| l.name == "ginger paste").collect();
@@ -219,7 +221,7 @@ mod tests {
     fn incompatible_units_stay_separate() {
         let ginger = ingredient(1, "ginger paste", "spice", "produce");
         let ingredients: HashMap<i64, Ingredient> = [(1, ginger)].into_iter().collect();
-        let clusters = HashMap::new();
+        let bases = HashMap::new();
 
         let recipe_tbsp = Recipe {
             id: 1,
@@ -250,7 +252,7 @@ mod tests {
             }],
         };
 
-        let lines = build_grocery_list(&[recipe_tbsp, recipe_g], &ingredients, &clusters, true);
+        let lines = build_grocery_list(&[recipe_tbsp, recipe_g], &ingredients, &bases, true);
         let ginger_lines: Vec<_> = lines.iter().filter(|l| l.name == "ginger paste").collect();
         assert_eq!(
             ginger_lines.len(),
@@ -260,20 +262,67 @@ mod tests {
     }
 
     #[test]
-    fn unexpanded_cluster_is_single_line() {
+    fn grocery_text_export_groups_and_lists_extras() {
+        let lines = vec![
+            GroceryLine {
+                name: "ginger paste".to_string(),
+                quantity: 2.0,
+                unit: "tbsp".to_string(),
+                category: "spice".to_string(),
+                aisle: "produce".to_string(),
+                checked: false,
+            },
+            GroceryLine {
+                name: "yogurt".to_string(),
+                quantity: 1.5,
+                unit: "cup".to_string(),
+                category: "dairy".to_string(),
+                aisle: "dairy".to_string(),
+                checked: false,
+            },
+        ];
+        let text = grocery_list_to_text(&lines, &["bin bags".to_string()]);
+        assert!(text.contains("spice"));
+        assert!(text.contains("- 2 tbsp ginger paste"), "{text}");
+        assert!(text.contains("- 1.5 cup yogurt"), "{text}");
+        assert!(text.contains("Other items"));
+        assert!(text.contains("- bin bags"));
+    }
+
+    #[test]
+    fn legacy_cluster_json_still_imports_as_bases() {
+        let json = r#"{
+            "ingredients": [],
+            "clusters": [
+                {"id": 1, "name": "tadka base", "description": "", "members": []}
+            ],
+            "recipes": [
+                {"id": 1, "name": "kadhi", "tags": [], "instructions": "", "servings": 4,
+                 "last_used": null,
+                 "items": [{"ref_type": "cluster", "ref_id": 1, "quantity": 1.0, "unit": "batch"}]}
+            ]
+        }"#;
+        let db: Database = serde_json::from_str(json).unwrap();
+        assert_eq!(db.bases.len(), 1);
+        assert_eq!(db.bases[0].name, "tadka base");
+        assert_eq!(db.recipes[0].items[0].ref_type, RefType::Base);
+    }
+
+    #[test]
+    fn unexpanded_base_is_single_line() {
         let ginger = ingredient(1, "ginger paste", "spice", "produce");
         let ingredients: HashMap<i64, Ingredient> = [(1, ginger)].into_iter().collect();
-        let cluster = IngredientCluster {
+        let base = Base {
             id: 100,
             name: "ginger-garlic-chilli paste".to_string(),
             description: "".to_string(),
-            members: vec![ClusterMember {
+            members: vec![BaseMember {
                 ingredient_id: 1,
                 quantity: 1.0,
                 unit: "tbsp".to_string(),
             }],
         };
-        let clusters: HashMap<i64, IngredientCluster> = [(100, cluster)].into_iter().collect();
+        let bases: HashMap<i64, Base> = [(100, base)].into_iter().collect();
 
         let recipe = Recipe {
             id: 1,
@@ -283,14 +332,14 @@ mod tests {
             servings: 4,
             last_used: None,
             items: vec![RecipeItem {
-                ref_type: RefType::Cluster,
+                ref_type: RefType::Base,
                 ref_id: 100,
                 quantity: 1.0,
                 unit: "batch".to_string(),
             }],
         };
 
-        let lines = build_grocery_list(&[recipe], &ingredients, &clusters, false);
+        let lines = build_grocery_list(&[recipe], &ingredients, &bases, false);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].name, "ginger-garlic-chilli paste");
     }

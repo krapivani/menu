@@ -10,33 +10,35 @@ pub struct Ingredient {
     pub aisle: String,
 }
 
-/// One ingredient inside a cluster, with the proportion used within that cluster.
+/// One ingredient inside a base, with the proportion used within that base.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClusterMember {
+pub struct BaseMember {
     pub ingredient_id: i64,
     pub quantity: f64,
     pub unit: String,
 }
 
-/// A named group of ingredients that are almost always used together,
-/// e.g. "ginger-garlic-chilli paste".
+/// A named building block of ingredients that are almost always used
+/// together, e.g. "ginger-garlic-chilli paste".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IngredientCluster {
+pub struct Base {
     pub id: i64,
     pub name: String,
     pub description: String,
-    pub members: Vec<ClusterMember>,
+    pub members: Vec<BaseMember>,
 }
 
-/// Whether a recipe line references a single ingredient or a whole cluster.
+/// Whether a recipe line references a single ingredient or a whole base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RefType {
     Ingredient,
-    Cluster,
+    /// `alias` keeps JSON exported before the cluster->base rename readable.
+    #[serde(alias = "cluster")]
+    Base,
 }
 
-/// A single line in a recipe: either an ingredient or a cluster, with quantity/unit.
+/// A single line in a recipe: either an ingredient or a base, with quantity/unit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecipeItem {
     pub ref_type: RefType,
@@ -46,7 +48,7 @@ pub struct RecipeItem {
 }
 
 /// A recipe: a name, some tags for filtering, instructions, servings, and a list
-/// of ingredient/cluster references with quantities.
+/// of ingredient/base references with quantities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
     pub id: i64,
@@ -63,6 +65,8 @@ pub struct Recipe {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Database {
     pub ingredients: Vec<Ingredient>,
-    pub clusters: Vec<IngredientCluster>,
+    /// `alias` keeps JSON exported before the cluster->base rename importable.
+    #[serde(alias = "clusters")]
+    pub bases: Vec<Base>,
     pub recipes: Vec<Recipe>,
 }

@@ -13,7 +13,7 @@ so it deploys for free to GitHub Pages.
 This is a Cargo workspace with two crates:
 
 - **`shared`** — plain Rust domain types and all business logic: menu
-  rotation, cluster expansion, and grocery-list aggregation. No I/O, so it
+  rotation, base expansion, and grocery-list aggregation. No I/O, so it
   builds and tests natively with `cargo test`.
 - **`frontend`** — the Leptos CSR (client-side-rendered) app, built with
   [`trunk`](https://trunkrs.dev). It embeds SQLite compiled to WebAssembly
@@ -27,41 +27,75 @@ root `Cargo.toml` sets `default-members = ["shared"]` so a plain
 `cargo build` / `cargo test` / `cargo clippy` at the repo root only touches
 `shared`.
 
+## Navigation
+
+The app is organised around the workflow — generate a menu, review it, shop
+from it — rather than a flat row of tabs:
+
+- **Home** is the *Generate Menu* screen: tag filters, number of days, a
+  **Generate** button, and the resulting plan listed per day with per-day
+  re-roll and pin/lock.
+- **View grocery list** appears on Home only *after* a menu has been
+  generated — the grocery list is not a destination of its own, because it
+  has nothing to show without a plan.
+- **Recipes** is reached from the link in the top bar. Each recipe expands to
+  show its ingredient lines *as authored*: plain ingredients as themselves,
+  and a base as a single named line that expands in place to reveal its
+  members and their scaled quantities.
+- **+ Add** offers *Add ingredient* and *Add recipe*.
+- The **gear** menu holds *Manage ingredients* and *Backup & restore (JSON)*.
+  Keep taking those JSON backups: the database lives only in this browser.
+- **Bases** have no destination of their own. They're created and edited
+  inline from the recipe editor ("Manage bases"), and browsed via the
+  drill-down from any base line in a recipe.
+
+The grocery list itself supports checking items off, the expand-bases toggle,
+ad-hoc items typed by hand (milk, bin bags — persisted, and visually distinct
+from recipe-derived lines), **Copy to clipboard** and a `.txt` download for
+pasting into a notes app, and **Save as PDF / print**, which uses the
+browser's native print dialog together with a `@media print` stylesheet
+rather than bundling a PDF library into the WASM binary.
+
 ## Data model
 
 The data model is normalized so that both single ingredients (`ginger
-paste`, `salt`, `red chilli powder`, ...) and named combinations of
-ingredients that are almost always used together (`ginger-garlic-chilli
-paste`, `tadka base`, ...) are first-class:
+paste`, `salt`, `red chilli powder`, ...) and named **bases** — building
+blocks of ingredients that are almost always used together
+(`ginger-garlic-chilli paste`, `tadka base`, ...) — are first-class:
 
 - `ingredients (id, name, category, default_unit, aisle)`
-- `ingredient_clusters (id, name, description)`
-- `cluster_members (cluster_id, ingredient_id, quantity, unit)` — the
-  proportions of each ingredient within a cluster
+- `bases (id, name, description)`
+- `base_members (base_id, ingredient_id, quantity, unit)` — the
+  proportions of each ingredient within a base
 - `recipes (id, name, tags, instructions, servings, last_used)`
-- `recipe_items (recipe_id, ref_type CHECK IN ('ingredient','cluster'),
+- `recipe_items (recipe_id, ref_type CHECK IN ('ingredient','base'),
   ref_id, quantity, unit)` — each recipe line references *either* a single
-  ingredient or a whole cluster
+  ingredient or a whole base
 
 SQL migrations live in [`/migrations`](./migrations) and are applied on
 first load, tracked via `PRAGMA user_version` (schema in
-`0001_initial_schema.sql`, seed data — 22 ingredients, 4 clusters, 15 example
-recipes — in `0002_seed_data.sql`). They're plain, portable SQL (no
+`0001_initial_schema.sql`, seed data — 22 ingredients, 4 bases, 15 example
+recipes — in `0002_seed_data.sql`, and the `cluster` → `base` rename in
+`0003_rename_clusters_to_bases.sql`). They're plain, portable SQL (no
 SQLite-only syntax where a standard alternative exists) so they can be
 replayed unmodified against a hosted database later (see below).
 
+JSON exported before the rename still imports: the `clusters` key and the
+`"cluster"` ref type are accepted as aliases for `bases` and `"base"`.
+
 ### Grocery list logic
 
-Building a grocery list expands each recipe's cluster references into their
-member ingredients, scaling each member's quantity by the amount of cluster
+Building a grocery list expands each recipe's base references into their
+member ingredients, scaling each member's quantity by the amount of base
 called for, then merges lines with the same ingredient name and a
 compatible unit (case-insensitive). Ingredients with incompatible units stay
 on separate lines rather than being silently combined. For example, a recipe
 calling for `ginger-garlic-chilli paste` and another calling for plain
-`ginger paste` produce a single combined `ginger paste` line. The Grocery
-List page has a toggle to show expanded individual ingredients (the default)
-or show clusters as single line items instead, for people who buy the paste
-pre-made.
+`ginger paste` produce a single combined `ginger paste` line. The grocery
+list has a toggle to show expanded individual ingredients (the default)
+or show bases as single line items instead, for people who buy the paste
+pre-made. Recipe *display* is the other way round — base-first, never
+flattened — so a recipe reads the way it was written.
 
 ### Rotation logic
 
@@ -110,8 +144,8 @@ restored from there on load. Persistence is behind a `Store` trait
 
 **This means your data lives only in the current browser, on the current
 device.** Clearing site data (or switching browsers/devices) loses it. Use
-the **Data** page's JSON export/import to back up or move your library — do
-this periodically, or before clearing browser storage.
+the gear menu's **Backup & restore (JSON)** screen to back up or move your
+library — do this periodically, or before clearing browser storage.
 
 The current implementation uses `localStorage` as its storage tier. A more
 durable [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)

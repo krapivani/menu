@@ -1,16 +1,20 @@
 use crate::state::use_app_state;
 use crate::store::Store;
 use leptos::prelude::*;
-use shared::models::{ClusterMember, IngredientCluster};
+use shared::models::{Base, BaseMember};
 
+/// Create and edit bases (named ingredient building blocks such as
+/// "adu-marcha" or "tadka base"). Bases have no top-level destination of
+/// their own — this editor is embedded in the recipe editor, where bases are
+/// actually needed.
 #[component]
-pub fn ClustersPage() -> impl IntoView {
+pub fn BaseEditor() -> impl IntoView {
     let state = use_app_state();
 
     let editing_id = RwSignal::new(0i64);
     let name = RwSignal::new(String::new());
     let description = RwSignal::new(String::new());
-    let members = RwSignal::new(Vec::<ClusterMember>::new());
+    let members = RwSignal::new(Vec::<BaseMember>::new());
 
     let member_ingredient = RwSignal::new(0i64);
     let member_quantity = RwSignal::new(String::new());
@@ -26,11 +30,11 @@ pub fn ClustersPage() -> impl IntoView {
         member_unit.set(String::new());
     };
 
-    let edit = move |cluster: IngredientCluster| {
-        editing_id.set(cluster.id);
-        name.set(cluster.name);
-        description.set(cluster.description);
-        members.set(cluster.members);
+    let edit = move |base: Base| {
+        editing_id.set(base.id);
+        name.set(base.name);
+        description.set(base.description);
+        members.set(base.members);
     };
 
     let add_member = move |_| {
@@ -41,7 +45,7 @@ pub fn ClustersPage() -> impl IntoView {
             return;
         }
         members.update(|m| {
-            m.push(ClusterMember {
+            m.push(BaseMember {
                 ingredient_id,
                 quantity,
                 unit,
@@ -53,23 +57,23 @@ pub fn ClustersPage() -> impl IntoView {
 
     let state_for_save = state.clone();
     let save = move |_: ()| {
-        let cluster = IngredientCluster {
+        let base = Base {
             id: editing_id.get(),
             name: name.get(),
             description: description.get(),
             members: members.get(),
         };
-        if cluster.name.trim().is_empty() {
-            state_for_save.set_error("Cluster name is required");
+        if base.name.trim().is_empty() {
+            state_for_save.set_error("Base name is required");
             return;
         }
-        if cluster.members.is_empty() {
+        if base.members.is_empty() {
             state_for_save.set_error("Add at least one member ingredient");
             return;
         }
         let state = state_for_save.clone();
         leptos::task::spawn_local(async move {
-            match state.store.save_cluster(cluster).await {
+            match state.store.save_base(base).await {
                 Ok(_) => state.reload(),
                 Err(e) => state.set_error(e.to_string()),
             }
@@ -81,7 +85,7 @@ pub fn ClustersPage() -> impl IntoView {
     let delete = move |id: i64| {
         let state = state_for_delete.clone();
         leptos::task::spawn_local(async move {
-            match state.store.delete_cluster(id).await {
+            match state.store.delete_base(id).await {
                 Ok(_) => state.reload(),
                 Err(e) => state.set_error(e.to_string()),
             }
@@ -89,10 +93,9 @@ pub fn ClustersPage() -> impl IntoView {
     };
 
     view! {
-        <div class="clusters-page">
-            <h2>"Ingredient Clusters"</h2>
+        <div class="base-editor">
             <p class="hint">"Named groups of ingredients almost always used together (e.g. ginger-garlic-chilli paste)."</p>
-            <form class="card" on:submit=move |ev| { ev.prevent_default(); save(()); }>
+            <div class="card">
                 <label>"Name" <input type="text"
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev)) /></label>
@@ -148,22 +151,28 @@ pub fn ClustersPage() -> impl IntoView {
                 </fieldset>
 
                 <div class="actions">
-                    <button type="submit">{move || if editing_id.get() == 0 { "Add cluster" } else { "Save changes" }}</button>
+                    <button type="button" class="primary" on:click=move |_| save(())>
+                        {move || if editing_id.get() == 0 { "Add base" } else { "Save base" }}
+                    </button>
                     <button type="button" on:click=move |_| reset_form()>"Cancel"</button>
                 </div>
-            </form>
+            </div>
 
             <ul class="entity-list">
-                <For each=move || state.db.get().clusters key=|c| c.id let:cluster>
+                <For each=move || state.db.get().bases key=|b| b.id let:base>
                     <li>
-                        <span class="name">{cluster.name.clone()}</span>
-                        <span class="meta">{cluster.members.len()} " members"</span>
+                        <span class="name">
+                            <span class="badge badge-base">"base"</span>
+                            " "
+                            {base.name.clone()}
+                        </span>
+                        <span class="meta">{base.members.len()} " ingredients"</span>
                         <span class="row-actions">
-                            <button on:click={
-                                let cluster = cluster.clone();
-                                move |_| edit(cluster.clone())
+                            <button type="button" on:click={
+                                let base = base.clone();
+                                move |_| edit(base.clone())
                             }>"Edit"</button>
-                            <button on:click={let delete = delete.clone(); move |_| delete(cluster.id)}>"Delete"</button>
+                            <button type="button" on:click={let delete = delete.clone(); move |_| delete(base.id)}>"Delete"</button>
                         </span>
                     </li>
                 </For>
