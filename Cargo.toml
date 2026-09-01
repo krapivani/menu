@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["shared", "frontend"]
+# `frontend` depends on crates (sqlite-wasm-rs) whose build script only
+# compiles for `wasm32-unknown-unknown`, so it is excluded from the default
+# set built by plain `cargo build`/`test`/`clippy` invocations at the
+# workspace root. Build/check it explicitly with `--target
+# wasm32-unknown-unknown` (or via `trunk build`, which does this for you).
+default-members = ["shared"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
